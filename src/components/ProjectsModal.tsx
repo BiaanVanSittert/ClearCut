@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { loadProjects, deleteProject, clearAllProjects } from '../utils/projectStorage';
+import { loadProjects, deleteProject, clearAllProjects, revokeProjectUrls } from '../utils/projectStorage';
 import type { ProjectData } from '../utils/projectStorage';
 import { Trash2, FolderOpen, AlertCircle } from 'lucide-react';
 
@@ -23,6 +23,8 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     if (confirm('Are you sure you want to delete this project?')) {
+      const proj = projects.find(p => p.id === id);
+      if (proj) revokeProjectUrls(proj);
       await deleteProject(id);
       fetchProjects();
     }
@@ -30,6 +32,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
 
   const handleClearAll = async () => {
     if (confirm('Are you sure you want to delete ALL projects? This cannot be undone.')) {
+      projects.forEach(p => revokeProjectUrls(p));
       await clearAllProjects();
       fetchProjects();
     }
@@ -73,15 +76,15 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
                 onMouseOver={(e) => e.currentTarget.style.borderColor = 'var(--primary-color)'}
                 onMouseOut={(e) => e.currentTarget.style.borderColor = 'transparent'}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flex: 1, minWidth: 0, paddingRight: '1rem' }}>
                   <img 
                     src={proj.editedUrl || proj.originalUrl} 
                     alt="Project preview" 
-                    style={{ width: '64px', height: '64px', objectFit: 'contain', background: 'black', borderRadius: '4px' }} 
+                    style={{ width: '64px', height: '64px', objectFit: 'contain', background: 'black', borderRadius: '4px', flexShrink: 0 }} 
                   />
-                  <div>
-                    <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem' }}>{proj.name}</h3>
-                    <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1.1rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{proj.name}</h3>
+                    <p style={{ margin: 0, fontSize: '0.85rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {proj.mode === 'single' ? 'Single Image' : `Sticker Pack (${proj.stickers?.length || 0} stickers)`} 
                       {' • '} 
                       {new Date(proj.timestamp).toLocaleString()}
@@ -90,7 +93,7 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
                 </div>
                 <button 
                   className="btn" 
-                  style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)' }}
+                  style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', flexShrink: 0 }}
                   onClick={(e) => handleDelete(e, proj.id)}
                 >
                   <Trash2 size={18} />

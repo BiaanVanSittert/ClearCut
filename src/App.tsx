@@ -4,6 +4,7 @@ import { Workspace } from './components/Workspace';
 import { StickerWorkspace } from './components/StickerWorkspace';
 import { Layers, Sparkles, FolderOpen } from 'lucide-react';
 import { ProjectsModal } from './components/ProjectsModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { saveProject } from './utils/projectStorage';
 import type { ProjectData } from './utils/projectStorage';
 import './index.css';
@@ -11,7 +12,15 @@ import './index.css';
 type Mode = 'single' | 'sticker';
 
 function App() {
-  const [mode, setMode] = useState<Mode>('single');
+  const [mode, setModeState] = useState<Mode>(() => {
+    const saved = localStorage.getItem('clearcut_mode');
+    return (saved === 'single' || saved === 'sticker') ? saved : 'single';
+  });
+
+  const setMode = (newMode: Mode) => {
+    setModeState(newMode);
+    localStorage.setItem('clearcut_mode', newMode);
+  };
   const [uploadedImage, setUploadedImage] = useState<{ file: File | null, url: string } | null>(null);
   const [showProjects, setShowProjects] = useState(false);
   const [currentProject, setCurrentProject] = useState<ProjectData | null>(null);
@@ -35,11 +44,20 @@ function App() {
   };
 
   const handleLoadProject = (proj: ProjectData) => {
-    setMode(proj.mode);
+    setMode(proj.mode || (proj.stickers && proj.stickers.length > 0 ? 'sticker' : 'single'));
     setCurrentProject(proj);
     // Since we don't have the File object, we can just pass null, but we have the URL
     setUploadedImage({ file: null, url: proj.originalUrl });
     setShowProjects(false);
+  };
+
+  const handleModeSwitch = async (newMode: Mode) => {
+    setMode(newMode);
+    if (currentProject) {
+      const updated = { ...currentProject, mode: newMode };
+      setCurrentProject(updated);
+      await saveProject(updated);
+    }
   };
 
   return (
@@ -57,36 +75,37 @@ function App() {
         </div>
         
         {/* Mode Selector & Projects Button */}
-        {!uploadedImage && (
-          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+          {!uploadedImage && (
             <button 
               className="btn btn-secondary"
               onClick={() => setShowProjects(true)}
             >
               <FolderOpen size={18} /> Projects
             </button>
-            <div style={{ display: 'flex', background: 'var(--bg-panel)', padding: '0.25rem', borderRadius: 'var(--radius-md)' }}>
-              <button 
-                className={`btn ${mode === 'single' ? 'btn-secondary active' : 'btn-secondary'}`}
-                style={{ border: 'none', boxShadow: 'none' }}
-                onClick={() => setMode('single')}
-              >
-                <Sparkles size={18} /> Single Image
-              </button>
-              <button 
-                className={`btn ${mode === 'sticker' ? 'btn-secondary active' : 'btn-secondary'}`}
-                style={{ border: 'none', boxShadow: 'none' }}
-                onClick={() => setMode('sticker')}
-              >
-                <Layers size={18} /> Sticker Pack
-              </button>
-            </div>
+          )}
+          <div style={{ display: 'flex', background: 'var(--bg-panel)', padding: '0.25rem', borderRadius: 'var(--radius-md)' }}>
+            <button 
+              className={`btn ${mode === 'single' ? 'btn-secondary active' : 'btn-secondary'}`}
+              style={{ border: 'none', boxShadow: 'none' }}
+              onClick={() => handleModeSwitch('single')}
+            >
+              <Sparkles size={18} /> Single Image
+            </button>
+            <button 
+              className={`btn ${mode === 'sticker' ? 'btn-secondary active' : 'btn-secondary'}`}
+              style={{ border: 'none', boxShadow: 'none' }}
+              onClick={() => handleModeSwitch('sticker')}
+            >
+              <Layers size={18} /> Sticker Pack
+            </button>
           </div>
-        )}
+        </div>
       </header>
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        {!uploadedImage ? (
+      <ErrorBoundary>
+        <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          {!uploadedImage ? (
           <div style={{ maxWidth: '800px', margin: '0 auto', width: '100%' }}>
             <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
               <h2 style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>
@@ -122,7 +141,8 @@ function App() {
             )}
           </div>
         )}
-      </main>
+        </main>
+      </ErrorBoundary>
 
       <footer style={{ 
         marginTop: '3rem', 

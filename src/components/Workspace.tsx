@@ -11,11 +11,12 @@ interface WorkspaceProps {
   projectData?: ProjectData | null;
   onSave?: (url: string) => void;
   onCancel?: () => void;
+  initialImageUrl?: string;
 }
 
 type Tool = 'ai' | 'eraser' | 'restore' | 'magic-wand' | 'pan';
 
-export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl, projectData, onSave, onCancel }) => {
+export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl, projectData, onSave, onCancel, initialImageUrl }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const maskCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -35,6 +36,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
+  const [panOffset, setPanOffset] = useState({ x: 0, y: 0 });
   const [scrollStart, setScrollStart] = useState({ left: 0, top: 0 });
   
   const [history, setHistory] = useState<ImageData[]>([]);
@@ -52,6 +54,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   const [exportQuality, setExportQuality] = useState(100);
 
   const imageObjRef = useRef<HTMLImageElement | null>(null);
+  const originalImageObjRef = useRef<HTMLImageElement | null>(null);
+
+  useEffect(() => {
+    const origImg = new Image();
+    origImg.src = originalUrl;
+    origImg.onload = () => {
+      originalImageObjRef.current = origImg;
+    };
+  }, [originalUrl]);
 
   const saveHistory = useCallback(() => {
     const canvas = canvasRef.current;
@@ -118,14 +129,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
 
   useEffect(() => {
     const img = new Image();
-    img.src = (projectData && !onSave && projectData.editedUrl) ? projectData.editedUrl : originalUrl;
+    img.src = initialImageUrl || ((projectData && !onSave && projectData.editedUrl) ? projectData.editedUrl : originalUrl);
     img.onload = () => {
       imageObjRef.current = img;
       resetCanvas(img);
     };
-  }, [originalUrl, projectData, onSave]);
+  }, [originalUrl, projectData, onSave, initialImageUrl]);
 
   const resetCanvas = (img: HTMLImageElement) => {
+    setPanOffset({ x: 0, y: 0 });
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -264,9 +276,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
       e.preventDefault();
       setIsPanning(true);
       setPanStart({ x: e.clientX, y: e.clientY });
-      if (containerRef.current) {
-        setScrollStart({ left: containerRef.current.scrollLeft, top: containerRef.current.scrollTop });
-      }
+      setScrollStart({ left: panOffset.x, top: panOffset.y });
       return;
     }
     
@@ -340,8 +350,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         ctx.beginPath();
         ctx.arc(x, y, brushSize / 2, 0, Math.PI * 2);
         ctx.clip();
-        if (imageObjRef.current) {
-          ctx.drawImage(imageObjRef.current, 0, 0, canvas.width, canvas.height);
+        if (originalImageObjRef.current) {
+          ctx.drawImage(originalImageObjRef.current, 0, 0, canvas.width, canvas.height);
         }
         ctx.restore();
       }
@@ -350,12 +360,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (isPanning) {
-      if (containerRef.current) {
-        const dx = e.clientX - panStart.x;
-        const dy = e.clientY - panStart.y;
-        containerRef.current.scrollLeft = scrollStart.left - dx;
-        containerRef.current.scrollTop = scrollStart.top - dy;
-      }
+      const dx = e.clientX - panStart.x;
+      const dy = e.clientY - panStart.y;
+      setPanOffset({
+        x: scrollStart.left + dx,
+        y: scrollStart.top + dy
+      });
       return;
     }
 
@@ -435,8 +445,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         ctx.arc(p.x, p.y, brushSize / 2, 0, Math.PI * 2);
       }
       ctx.clip();
-      if (imageObjRef.current) {
-        ctx.drawImage(imageObjRef.current, 0, 0, canvas.width, canvas.height);
+      if (originalImageObjRef.current) {
+        ctx.drawImage(originalImageObjRef.current, 0, 0, canvas.width, canvas.height);
       }
       ctx.restore();
     }
@@ -665,8 +675,8 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         </div>
         
         {/* Interactive Canvas Container */}
-        <div ref={containerRef} style={{ flex: 1, overflow: 'auto', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'repeating-conic-gradient(#222 0% 25%, #1a1a1a 0% 50%) 50% / 20px 20px' }}>
-          <div style={{ position: 'relative', transform: `scale(${zoom})`, transformOrigin: 'center center', transition: 'transform 0.1s ease-out' }}>
+        <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'repeating-conic-gradient(#222 0% 25%, #1a1a1a 0% 50%) 50% / 20px 20px' }}>
+          <div style={{ position: 'relative', transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: 'center center', transition: isPanning ? 'none' : 'transform 0.1s ease-out' }}>
             <canvas
               ref={canvasRef}
               style={{

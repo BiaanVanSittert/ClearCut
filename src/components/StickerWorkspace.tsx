@@ -27,6 +27,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   
   const [isExtracting, setIsExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
   const [isBulkProcessing, setIsBulkProcessing] = useState(false);
   const [globalProgress, setGlobalProgress] = useState(0);
   
@@ -78,10 +79,18 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
         }
       } catch (e: any) {
         console.error('Failed to extract stickers:', e);
+        setExtractError("Failed to extract stickers. Ensure there is clear contrast or try a smaller image.");
         try {
-          fetch('http://localhost:3000/error?msg=' + encodeURIComponent(e ? e.toString() : 'null_error')).catch(() => {});
-        } catch (fetchErr) {}
-        alert('Could not automatically detect stickers. Ensure there is clear contrast.');
+          // Fallback to single sticker if extraction fails
+          const newStickers = [{
+            id: `sticker-${Date.now()}-fallback`,
+            originalUrl,
+            isProcessing: false
+          }];
+          setStickers(newStickers);
+        } catch(fallbackErr) {
+          // Ignore
+        }
       } finally {
         setIsExtracting(false);
       }
@@ -116,59 +125,34 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
     return URL.createObjectURL(blob);
   };
 
-  const applyWhiteOutline = async (imageUrl: string): Promise<string> => {
+  const applyWhiteOutline = async (url: string): Promise<string> => {
     return new Promise((resolve) => {
       const img = new Image();
-      img.src = imageUrl;
+      img.src = url;
       img.onload = () => {
-        const padding = 15;
+        const padding = 10;
         const canvas = document.createElement('canvas');
         canvas.width = img.width + padding * 2;
         canvas.height = img.height + padding * 2;
         const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(imageUrl);
-        
-        // Draw original image first to get its alpha channel
-        ctx.drawImage(img, padding, padding);
-        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        const data = imgData.data;
-        
-        // Create an outline map
-        const outline = new Uint8Array(canvas.width * canvas.height);
-        const w = canvas.width;
-        
-        for (let y = 0; y < canvas.height; y++) {
-          for (let x = 0; x < canvas.width; x++) {
-            const alpha = data[(y * w + x) * 4 + 3];
-            if (alpha > 50) {
-              // Expand the pixel to form a border
-              for (let dy = -10; dy <= 10; dy++) {
-                for (let dx = -10; dx <= 10; dx++) {
-                  if (dx*dx + dy*dy <= 100) {
-                    const ny = y + dy;
-                    const nx = x + dx;
-                    if (ny >= 0 && ny < canvas.height && nx >= 0 && nx < canvas.width) {
-                      outline[ny * w + nx] = 1;
-                    }
-                  }
-                }
-              }
-            }
-          }
+        if (!ctx) return resolve(url);
+
+        // 1. Dilate alpha mask by drawing the image in a circle
+        const steps = 32; // Higher is smoother
+        for (let i = 0; i < steps; i++) {
+          const angle = (Math.PI * 2 * i) / steps;
+          const dx = Math.cos(angle) * padding;
+          const dy = Math.sin(angle) * padding;
+          ctx.drawImage(img, padding + dx, padding + dy);
         }
         
-        // Draw the white outline
-        const outData = ctx.createImageData(canvas.width, canvas.height);
-        for (let i = 0; i < outline.length; i++) {
-          if (outline[i] === 1) {
-            outData.data[i*4] = 255;
-            outData.data[i*4+1] = 255;
-            outData.data[i*4+2] = 255;
-            outData.data[i*4+3] = 255;
-          }
-        }
-        ctx.putImageData(outData, 0, 0);
-        // Draw the image back on top
+        // 2. Color the dilated mask solid white
+        ctx.globalCompositeOperation = 'source-in';
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // 3. Draw the original image perfectly on top
+        ctx.globalCompositeOperation = 'source-over';
         ctx.drawImage(img, padding, padding);
         
         resolve(canvas.toDataURL('image/png'));
@@ -343,10 +327,19 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
         <div style={{ position: 'fixed', inset: 0, zIndex: 50, background: 'var(--bg-color)', display: 'flex', flexDirection: 'column' }}>
           <Workspace 
             originalFile={new File([], 'sticker.png')} 
-            originalUrl={stickerToEdit.processedUrl || stickerToEdit.originalUrl} 
+            originalUrl={stickerToEdit.originalUrl} 
+            initialImageUrl={stickerToEdit.processedUrl || stickerToEdit.originalUrl}
             onSave={(newUrl) => {
               saveHistory(stickers);
-              setStickers(prev => prev.map(s => s.id === editingStickerId ? { ...s, processedUrl: newUrl } : s));
+              setStickers(prev => prev.map(s => {
+                if (s.id === editingStickerId) {
+                  if (s.processedUrl && s.processedUrl.startsWith('blob:')) {
+                    URL.revokeObjectURL(s.processedUrl);
+                  }
+                  return { ...s, processedUrl: newUrl };
+                }
+                return s;
+              }));
               setEditingStickerId(null);
             }}
             onCancel={() => setEditingStickerId(null)}
@@ -382,6 +375,24 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
           </button>
         </div>
         
+        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+          <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.8rem', padding: '0.4rem 0.2rem' }} onClick={() => setSelectedIds(new Set(stickers.map(s => s.id)))}>Select All</button>
+          <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.8rem', padding: '0.4rem 0.2rem' }} onClick={() => setSelectedIds(new Set())}>Clear</button>
+          {selectedIds.size > 0 && (
+            <button className="btn btn-secondary" style={{ color: '#ef4444', borderColor: 'rgba(239,68,68,0.3)', flex: 1, fontSize: '0.8rem', padding: '0.4rem 0.2rem' }} onClick={() => {
+              saveHistory(stickers);
+              stickers.forEach(s => {
+                if (selectedIds.has(s.id)) {
+                  if (s.originalUrl && s.originalUrl.startsWith('blob:')) URL.revokeObjectURL(s.originalUrl);
+                  if (s.processedUrl && s.processedUrl.startsWith('blob:')) URL.revokeObjectURL(s.processedUrl);
+                }
+              });
+              setStickers(prev => prev.filter(s => !selectedIds.has(s.id)));
+              setSelectedIds(new Set());
+            }}>Delete</button>
+          )}
+        </div>
+        
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
           <input 
             type="checkbox" 
@@ -406,16 +417,42 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
 
         <hr style={{ borderColor: 'var(--border-color)', margin: '0.5rem 0' }} />
 
-        <button className="btn btn-primary" style={{ background: '#10b981' }} onClick={handleExportZip}>
-          <Download size={18} /> Export as ZIP
+        <button 
+          className="btn btn-primary" 
+          style={{ background: stickers.length === 0 ? 'var(--bg-panel)' : '#10b981' }} 
+          onClick={handleExportZip}
+          disabled={stickers.length === 0}
+        >
+          <Download size={18} /> {selectedIds.size > 0 ? 'Export Selected to ZIP' : 'Export All to ZIP'}
         </button>
-        <button className="btn btn-secondary" onClick={handleExportSheet}>
-          <LayoutGrid size={18} /> Export as Single Sheet
+        <button 
+          className="btn btn-secondary" 
+          onClick={handleExportSheet}
+          disabled={stickers.length === 0}
+        >
+          <LayoutGrid size={18} /> {selectedIds.size > 0 ? 'Export Selected as Sheet' : 'Export All as Sheet'}
         </button>
       </div>
 
       {/* Grid */}
       <div className="glass-panel" style={{ flex: 1, padding: '2rem', overflowY: 'auto' }}>
+        {extractError && (
+          <div style={{ 
+            background: 'rgba(239, 68, 68, 0.1)', 
+            border: '1px solid #ef4444', 
+            color: '#ef4444', 
+            padding: '1rem', 
+            borderRadius: 'var(--radius-md)',
+            marginBottom: '1.5rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between'
+          }}>
+            <span>{extractError}</span>
+            <button className="btn" style={{ padding: '0.25rem 0.5rem', minWidth: 0, border: '1px solid #ef4444', color: '#ef4444', background: 'transparent' }} onClick={() => setExtractError(null)}>Dismiss</button>
+          </div>
+        )}
+
         {stickers.length === 0 ? (
           <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No stickers detected.</div>
         ) : (

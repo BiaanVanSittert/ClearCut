@@ -26,6 +26,7 @@ export async function extractStickers(
     const img = new Image();
     img.src = imageUrl;
     img.onload = () => {
+      const cleanupList: any[] = [];
       try {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
@@ -35,6 +36,7 @@ export async function extractStickers(
         ctx.drawImage(img, 0, 0);
         const imgData = ctx.getImageData(0, 0, img.width, img.height);
         const rawMat = cv.matFromImageData(imgData);
+        cleanupList.push(rawMat);
         
         // Downscale to max 1024px to prevent WASM OOM and reduce noise
         const MAX_DIM = 1024;
@@ -43,18 +45,22 @@ export async function extractStickers(
         const pHeight = Math.round(img.height * scale);
         
         const mat = new cv.Mat();
+        cleanupList.push(mat);
         cv.resize(rawMat, mat, new cv.Size(pWidth, pHeight), 0, 0, cv.INTER_AREA);
         rawMat.delete();
         
         // Use alpha channel if available and has variation, else fallback to Canny edge detection
         const channels = new cv.MatVector();
+        cleanupList.push(channels);
         cv.split(mat, channels);
         let useAlpha = false;
         
         let edges = new cv.Mat();
+        cleanupList.push(edges);
         
         if (channels.size() === 4) {
           const alpha = channels.get(3);
+          cleanupList.push(alpha);
           const nonZero = cv.countNonZero(alpha);
           if (nonZero < alpha.rows * alpha.cols) {
              // Image has transparent areas
@@ -66,6 +72,7 @@ export async function extractStickers(
         
         if (!useAlpha) {
           const gray = new cv.Mat();
+          cleanupList.push(gray);
           if (mat.channels() === 3) {
             cv.cvtColor(mat, gray, cv.COLOR_RGB2GRAY, 0);
           } else if (mat.channels() === 4) {
@@ -83,13 +90,15 @@ export async function extractStickers(
         // Dilate to connect edges
         if (dilationIterations > 0) {
           const M = cv.Mat.ones(5, 5, cv.CV_8U);
+          cleanupList.push(M);
           cv.dilate(edges, edges, M, new cv.Point(-1, -1), dilationIterations);
-          M.delete();
         }
 
         // Find contours
         const contours = new cv.MatVector();
+        cleanupList.push(contours);
         const hierarchy = new cv.Mat();
+        cleanupList.push(hierarchy);
         cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
         
         const rects: StickerRect[] = [];
@@ -112,17 +121,20 @@ export async function extractStickers(
             }
           }
         }
-        
-        // Cleanup
-        mat.delete();
-        edges.delete();
-        contours.delete();
-        hierarchy.delete();
-        
         resolve(rects);
       } catch (err) {
         console.error("OpenCV error:", err);
         reject(err);
+      } finally {
+        for (const obj of cleanupList) {
+          try {
+            if (obj && typeof obj.delete === 'function') {
+              obj.delete();
+            }
+          } catch (e) {
+            // Ignore double deletes
+          }
+        }
       }
     };
     img.onerror = reject;
