@@ -55,7 +55,7 @@ export async function extractStickers(
         cv.split(mat, channels);
         let useAlpha = false;
         
-        let edges = new cv.Mat();
+        const edges = new cv.Mat();
         cleanupList.push(edges);
         
         if (channels.size() === 4) {
@@ -106,18 +106,24 @@ export async function extractStickers(
 
         for (let i = 0; i < contours.size(); ++i) {
           const contour = contours.get(i);
-          const area = cv.contourArea(contour);
-          if (area > minArea) {
-            const rect = cv.boundingRect(contour);
-            // Add a small padding and scale back to original image coordinates
-            const pad = 10;
-            const x = Math.max(0, Math.floor((rect.x / scale) - pad));
-            const y = Math.max(0, Math.floor((rect.y / scale) - pad));
-            const w = Math.min(img.width - x, Math.ceil((rect.width / scale) + pad * 2));
-            const h = Math.min(img.height - y, Math.ceil((rect.height / scale) + pad * 2));
-            
-            if (w > 0 && h > 0) {
-              rects.push({ x, y, w, h });
+          try {
+            const area = cv.contourArea(contour);
+            if (area > minArea) {
+              const rect = cv.boundingRect(contour);
+              // Add a small padding and scale back to original image coordinates
+              const pad = 10;
+              const x = Math.max(0, Math.floor((rect.x / scale) - pad));
+              const y = Math.max(0, Math.floor((rect.y / scale) - pad));
+              const w = Math.min(img.width - x, Math.ceil((rect.width / scale) + pad * 2));
+              const h = Math.min(img.height - y, Math.ceil((rect.height / scale) + pad * 2));
+              
+              if (w > 0 && h > 0) {
+                rects.push({ x, y, w, h });
+              }
+            }
+          } finally {
+            if (contour && typeof contour.delete === 'function') {
+              contour.delete();
             }
           }
         }
@@ -131,7 +137,7 @@ export async function extractStickers(
             if (obj && typeof obj.delete === 'function') {
               obj.delete();
             }
-          } catch (e) {
+          } catch {
             // Ignore double deletes
           }
         }
@@ -139,4 +145,97 @@ export async function extractStickers(
     };
     img.onerror = reject;
   });
+}
+
+/**
+ * Applies a custom color & thickness outline to any transparent PNG / image URL.
+ */
+export async function applyCustomOutline(
+  url: string, 
+  outlineColor: string = '#ffffff', 
+  outlineWidth: number = 10
+): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      const padding = outlineWidth;
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width + padding * 2;
+      canvas.height = img.height + padding * 2;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return resolve(url);
+
+      // 1. Dilate alpha mask by drawing the image in a radial circle
+      const steps = Math.max(32, outlineWidth * 2);
+      for (let i = 0; i < steps; i++) {
+        const angle = (Math.PI * 2 * i) / steps;
+        const dx = Math.cos(angle) * padding;
+        const dy = Math.sin(angle) * padding;
+        ctx.drawImage(img, padding + dx, padding + dy);
+      }
+      
+      // 2. Color the dilated mask
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.fillStyle = outlineColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // 3. Draw the original image centered on top
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(img, padding, padding);
+      
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(url);
+  });
+}
+
+/**
+ * Trims transparent whitespace around an image on a canvas.
+ */
+export function trimCanvasTransparentMargins(canvas: HTMLCanvasElement): HTMLCanvasElement | null {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const width = canvas.width;
+  const height = canvas.height;
+  const imgData = ctx.getImageData(0, 0, width, height);
+  const data = imgData.data;
+
+  let minX = width;
+  let minY = height;
+  let maxX = -1;
+  let maxY = -1;
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const alpha = data[(y * width + x) * 4 + 3];
+      if (alpha > 5) { // threshold for non-transparent pixels
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+
+  // Entirely transparent image or already fitted
+  if (maxX === -1 || maxY === -1) return null;
+
+  const trimWidth = maxX - minX + 1;
+  const trimHeight = maxY - minY + 1;
+
+  const trimmedCanvas = document.createElement('canvas');
+  trimmedCanvas.width = trimWidth;
+  trimmedCanvas.height = trimHeight;
+  const trimmedCtx = trimmedCanvas.getContext('2d');
+  if (!trimmedCtx) return null;
+
+  trimmedCtx.drawImage(
+    canvas,
+    minX, minY, trimWidth, trimHeight,
+    0, 0, trimWidth, trimHeight
+  );
+
+  return trimmedCanvas;
 }
