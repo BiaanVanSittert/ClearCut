@@ -69,7 +69,7 @@ function App() {
           title="Return Home"
         >
           <div style={{ background: 'var(--primary-color)', padding: '0.5rem', borderRadius: 'var(--radius-sm)', display: 'flex' }}>
-            <img src="/favicon.svg" alt="Logo" style={{ width: 24, height: 24, filter: 'brightness(0) invert(1)' }} />
+            <img src="./favicon.svg" alt="Logo" style={{ width: 24, height: 24, filter: 'brightness(0) invert(1)' }} />
           </div>
           <h1 style={{ fontSize: '1.5rem', fontWeight: 700, margin: 0 }}>ClearCut</h1>
         </div>
