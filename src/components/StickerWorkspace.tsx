@@ -1,9 +1,12 @@
-import React, { useEffect, useState } from 'react';
-import { extractStickers } from '../utils/stickerUtils';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import { extractStickers, applyCustomOutline } from '../utils/stickerUtils';
 import type { StickerRect } from '../utils/stickerUtils';
 import { removeBackground } from '@imgly/background-removal';
 import JSZip from 'jszip';
-import { Download, Loader2, Sparkles, Trash2, Scissors, Edit2, CheckSquare, Square, Undo, LayoutGrid } from 'lucide-react';
+import { 
+  Download, Loader2, Sparkles, Trash2, Scissors, Edit2, 
+  CheckSquare, Square, Undo, LayoutGrid, Crop, X, Check, Palette 
+} from 'lucide-react';
 import { Workspace } from './Workspace';
 import { saveProject } from '../utils/projectStorage';
 import type { ProjectData } from '../utils/projectStorage';
@@ -21,6 +24,8 @@ export interface Sticker {
   isProcessing: boolean;
 }
 
+const OUTLINE_PRESET_COLORS = ['#ffffff', '#000000', '#facc15', '#ec4899', '#06b6d4', '#10b981'];
+
 export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl, projectData }) => {
   const [stickers, setStickers] = useState<Sticker[]>([]);
   const [history, setHistory] = useState<Sticker[][]>([]);
@@ -32,10 +37,20 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
   const [globalProgress, setGlobalProgress] = useState(0);
   
   const [editingStickerId, setEditingStickerId] = useState<string | null>(null);
-  const [addWhiteOutline, setAddWhiteOutline] = useState(false);
+  
+  // Customizable Outline State
+  const [addOutline, setAddOutline] = useState(false);
+  const [outlineWidth, setOutlineWidth] = useState(10);
+  const [outlineColor, setOutlineColor] = useState('#ffffff');
+
+  // Manual Crop Modal State
+  const [isManualCropping, setIsManualCropping] = useState(false);
+  const [cropStart, setCropStart] = useState<{ x: number, y: number } | null>(null);
+  const [cropRect, setCropRect] = useState<{ x: number, y: number, w: number, h: number } | null>(null);
+  const manualCropCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Push state to history
-  const saveHistory = (newState: Sticker[]) => {
+  const saveHistory = useCallback((newState: Sticker[]) => {
     setHistory(prev => [...prev, stickers].slice(-15)); // Keep last 15 states
     setStickers(newState);
     
@@ -47,7 +62,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
         timestamp: Date.now()
       });
     }
-  };
+  }, [stickers, projectData]);
 
   const handleUndo = () => {
     if (history.length === 0) return;
@@ -56,49 +71,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
     setStickers(previous);
   };
 
-  useEffect(() => {
-    // If we loaded an existing project with stickers, use them
-    if (projectData && projectData.stickers && projectData.stickers.length > 0) {
-      setStickers(projectData.stickers);
-      return;
-    }
-
-    const process = async () => {
-      setIsExtracting(true);
-      try {
-        const rects = await extractStickers(originalUrl, 1, 0.005);
-        const crops = await cropStickers(originalUrl, rects);
-        const newStickers = crops.map((url, i) => ({
-          id: `sticker-${Date.now()}-${i}`,
-          originalUrl: url,
-          isProcessing: false
-        }));
-        setStickers(newStickers);
-        if (projectData) {
-          saveProject({ ...projectData, stickers: newStickers, timestamp: Date.now() });
-        }
-      } catch (e: any) {
-        console.error('Failed to extract stickers:', e);
-        setExtractError("Failed to extract stickers. Ensure there is clear contrast or try a smaller image.");
-        try {
-          // Fallback to single sticker if extraction fails
-          const newStickers = [{
-            id: `sticker-${Date.now()}-fallback`,
-            originalUrl,
-            isProcessing: false
-          }];
-          setStickers(newStickers);
-        } catch(fallbackErr) {
-          // Ignore
-        }
-      } finally {
-        setIsExtracting(false);
-      }
-    };
-    process();
-  }, [originalUrl]);
-
-  const cropStickers = (imageUrl: string, rects: StickerRect[]): Promise<string[]> => {
+  const cropStickers = useCallback((imageUrl: string, rects: StickerRect[]): Promise<string[]> => {
     return new Promise((resolve) => {
       const img = new Image();
       img.src = imageUrl;
@@ -117,47 +90,65 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
         });
         resolve(urls);
       };
+      img.onerror = () => resolve([]);
     });
-  };
+  }, []);
+
+  useEffect(() => {
+    // If we loaded an existing project with stickers, map and use them
+    if (projectData && projectData.stickers && projectData.stickers.length > 0) {
+      setStickers(projectData.stickers.map(s => ({
+        id: s.id,
+        originalUrl: s.originalUrl,
+        processedUrl: s.processedUrl,
+        isProcessing: !!s.isProcessing
+      })));
+      return;
+    }
+
+    let isMounted = true;
+
+    const process = async () => {
+      setIsExtracting(true);
+      try {
+        const rects = await extractStickers(originalUrl, 1, 0.005);
+        const crops = await cropStickers(originalUrl, rects);
+        if (!isMounted) return;
+
+        const newStickers: Sticker[] = crops.map((url, i) => ({
+          id: `sticker-${Date.now()}-${i}`,
+          originalUrl: url,
+          isProcessing: false
+        }));
+        setStickers(newStickers);
+        if (projectData) {
+          saveProject({ ...projectData, stickers: newStickers, timestamp: Date.now() });
+        }
+      } catch (e) {
+        console.error('Failed to extract stickers:', e);
+        if (!isMounted) return;
+        setExtractError("Automatic sticker detection completed with fallback. You can use 'Manual Crop' to slice any individual stickers.");
+        // Fallback to single sticker if extraction fails
+        const newStickers: Sticker[] = [{
+          id: `sticker-${Date.now()}-fallback`,
+          originalUrl,
+          isProcessing: false
+        }];
+        setStickers(newStickers);
+      } finally {
+        if (isMounted) setIsExtracting(false);
+      }
+    };
+    process();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [originalUrl, projectData, cropStickers]);
 
   const removeBgForSticker = async (stickerUrl: string): Promise<string> => {
     const blob = await removeBackground(stickerUrl);
     return URL.createObjectURL(blob);
-  };
-
-  const applyWhiteOutline = async (url: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.src = url;
-      img.onload = () => {
-        const padding = 10;
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width + padding * 2;
-        canvas.height = img.height + padding * 2;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return resolve(url);
-
-        // 1. Dilate alpha mask by drawing the image in a circle
-        const steps = 32; // Higher is smoother
-        for (let i = 0; i < steps; i++) {
-          const angle = (Math.PI * 2 * i) / steps;
-          const dx = Math.cos(angle) * padding;
-          const dy = Math.sin(angle) * padding;
-          ctx.drawImage(img, padding + dx, padding + dy);
-        }
-        
-        // 2. Color the dilated mask solid white
-        ctx.globalCompositeOperation = 'source-in';
-        ctx.fillStyle = 'white';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        
-        // 3. Draw the original image perfectly on top
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.drawImage(img, padding, padding);
-        
-        resolve(canvas.toDataURL('image/png'));
-      };
-    });
   };
 
   const handleBulkProcess = async () => {
@@ -179,8 +170,8 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       
       try {
         let processedUrl = await removeBgForSticker(targetStickers[i].originalUrl);
-        if (addWhiteOutline) {
-          processedUrl = await applyWhiteOutline(processedUrl);
+        if (addOutline) {
+          processedUrl = await applyCustomOutline(processedUrl, outlineColor, outlineWidth);
         }
         setStickers(prev => prev.map(s => s.id === targetId ? { ...s, processedUrl, isProcessing: false } : s));
       } catch (e) {
@@ -196,6 +187,10 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
   const handleDelete = (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     saveHistory(stickers);
+    const target = stickers.find(s => s.id === id);
+    if (target?.processedUrl?.startsWith('blob:')) {
+      URL.revokeObjectURL(target.processedUrl);
+    }
     setStickers(prev => prev.filter(s => s.id !== id));
     setSelectedIds(prev => {
       const next = new Set(prev);
@@ -209,16 +204,14 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
     const target = stickers.find(s => s.id === id);
     if (!target) return;
     
-    // Set processing
     setStickers(prev => prev.map(s => s.id === id ? { ...s, isProcessing: true } : s));
     
     try {
-      // Re-extract with zero dilation and smaller area threshold to split clumped stickers
       const rects = await extractStickers(target.originalUrl, 0, 0.001);
       if (rects.length > 1) {
         saveHistory(stickers);
         const crops = await cropStickers(target.originalUrl, rects);
-        const newStickers = crops.map((url, i) => ({
+        const newStickers: Sticker[] = crops.map((url, i) => ({
           id: `sticker-${Date.now()}-split-${i}`,
           originalUrl: url,
           isProcessing: false
@@ -232,7 +225,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
           return next;
         });
       } else {
-        alert('Could not detect multiple sub-stickers. You may need to manually erase parts in Edit mode.');
+        alert('Could not detect multiple sub-stickers automatically. Try "Manual Crop" or manual erasure in Edit mode.');
         setStickers(prev => prev.map(s => s.id === id ? { ...s, isProcessing: false } : s));
       }
     } catch (err) {
@@ -281,7 +274,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
         const url = sticker.processedUrl || sticker.originalUrl;
         const img = new Image();
         img.src = url;
-        await new Promise(r => img.onload = r);
+        await new Promise(r => { img.onload = r; });
         
         const x = (index % cols) * cellSize;
         const y = Math.floor(index / cols) * cellSize;
@@ -307,6 +300,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       a.href = url;
       a.download = 'stickers_pack.zip';
       a.click();
+      URL.revokeObjectURL(url);
     }
   };
 
@@ -318,6 +312,92 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       a.download = 'stickers_sheet.png';
       a.click();
     }
+  };
+
+  // Manual Crop Handlers
+  const handleOpenManualCrop = () => {
+    setIsManualCropping(true);
+    setCropRect(null);
+    setCropStart(null);
+    setTimeout(() => {
+      const canvas = manualCropCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const img = new Image();
+      img.src = originalUrl;
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+      };
+    }, 50);
+  };
+
+  const handleManualCropMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = manualCropCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = Math.floor((e.clientX - rect.left) * scaleX);
+    const y = Math.floor((e.clientY - rect.top) * scaleY);
+    setCropStart({ x, y });
+    setCropRect({ x, y, w: 0, h: 0 });
+  };
+
+  const handleManualCropMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!cropStart) return;
+    const canvas = manualCropCanvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const curX = Math.floor((e.clientX - rect.left) * scaleX);
+    const curY = Math.floor((e.clientY - rect.top) * scaleY);
+
+    const x = Math.min(cropStart.x, curX);
+    const y = Math.min(cropStart.y, curY);
+    const w = Math.abs(curX - cropStart.x);
+    const h = Math.abs(curY - cropStart.y);
+
+    setCropRect({ x, y, w, h });
+  };
+
+  const handleManualCropMouseUp = () => {
+    setCropStart(null);
+  };
+
+  const handleConfirmManualCrop = () => {
+    if (!cropRect || cropRect.w < 10 || cropRect.h < 10) {
+      alert('Please drag a selection rectangle over the sticker you want to crop.');
+      return;
+    }
+    const canvas = manualCropCanvasRef.current;
+    if (!canvas) return;
+    
+    const cropCanvas = document.createElement('canvas');
+    cropCanvas.width = cropRect.w;
+    cropCanvas.height = cropRect.h;
+    const cCtx = cropCanvas.getContext('2d');
+    if (!cCtx) return;
+
+    cCtx.drawImage(
+      canvas,
+      cropRect.x, cropRect.y, cropRect.w, cropRect.h,
+      0, 0, cropRect.w, cropRect.h
+    );
+
+    const url = cropCanvas.toDataURL('image/png');
+    const newSticker: Sticker = {
+      id: `sticker-manual-${Date.now()}`,
+      originalUrl: url,
+      isProcessing: false
+    };
+
+    saveHistory([...stickers, newSticker]);
+    setIsManualCropping(false);
+    setCropRect(null);
   };
 
   if (editingStickerId) {
@@ -354,7 +434,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', flex: 1 }}>
         <Loader2 className="animate-spin" size={48} color="var(--primary-color)" style={{ marginBottom: '1rem' }} />
         <h2>Detecting Stickers...</h2>
-        <p style={{ color: 'var(--text-muted)' }}>Using OpenCV to detect individual objects on your image.</p>
+        <p style={{ color: 'var(--text-muted)' }}>Using OpenCV WASM to detect individual objects on your sticker sheet.</p>
       </div>
     );
   }
@@ -362,8 +442,8 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
   return (
     <div style={{ display: 'flex', gap: '2rem', height: '100%', flex: 1 }}>
       {/* Sidebar */}
-      <div className="glass-panel" style={{ width: '280px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div className="glass-panel" style={{ width: '300px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1rem', overflowY: 'auto' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div>
             <h3 style={{ marginBottom: '0.25rem', fontSize: '1.1rem' }}>Extracted Items</h3>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
@@ -375,7 +455,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
           </button>
         </div>
         
-        <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.8rem', padding: '0.4rem 0.2rem' }} onClick={() => setSelectedIds(new Set(stickers.map(s => s.id)))}>Select All</button>
           <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.8rem', padding: '0.4rem 0.2rem' }} onClick={() => setSelectedIds(new Set())}>Clear</button>
           {selectedIds.size > 0 && (
@@ -392,15 +472,73 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
             }}>Delete</button>
           )}
         </div>
+
+        <button 
+          className="btn btn-secondary"
+          onClick={handleOpenManualCrop}
+          style={{ width: '100%', fontSize: '0.85rem' }}
+        >
+          <Crop size={16} /> Manual Crop from Sheet
+        </button>
+
+        <hr style={{ borderColor: 'var(--border-color)', margin: '0.25rem 0' }} />
         
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
-          <input 
-            type="checkbox" 
-            id="outline-toggle"
-            checked={addWhiteOutline}
-            onChange={(e) => setAddWhiteOutline(e.target.checked)}
-          />
-          <label htmlFor="outline-toggle" style={{ cursor: 'pointer' }}>Add White Sticker Outline</label>
+        {/* Outline Customizer */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
+            <input 
+              type="checkbox" 
+              id="outline-toggle"
+              checked={addOutline}
+              onChange={(e) => setAddOutline(e.target.checked)}
+            />
+            <label htmlFor="outline-toggle" style={{ cursor: 'pointer', fontWeight: 500 }}>
+              Add Die-Cut Sticker Outline
+            </label>
+          </div>
+
+          {addOutline && (
+            <div style={{ background: 'var(--bg-dark)', padding: '0.75rem', borderRadius: 'var(--radius-sm)', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.25rem' }}>
+                  Outline Width: {outlineWidth}px
+                </label>
+                <input 
+                  type="range" 
+                  min="2" 
+                  max="30" 
+                  value={outlineWidth} 
+                  onChange={(e) => setOutlineWidth(parseInt(e.target.value))}
+                  style={{ width: '100%' }}
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '0.75rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginBottom: '0.35rem' }}>
+                  <Palette size={12} /> Outline Color
+                </label>
+                <div style={{ display: 'flex', gap: '0.35rem', alignItems: 'center' }}>
+                  <input 
+                    type="color" 
+                    value={outlineColor} 
+                    onChange={(e) => setOutlineColor(e.target.value)}
+                    style={{ width: '28px', height: '28px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                  />
+                  {OUTLINE_PRESET_COLORS.map(c => (
+                    <div 
+                      key={c}
+                      onClick={() => setOutlineColor(c)}
+                      style={{
+                        width: '20px', height: '20px', borderRadius: '3px',
+                        background: c, cursor: 'pointer',
+                        border: outlineColor === c ? '2px solid var(--primary-color)' : '1px solid var(--border-color)'
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
         
         <button 
@@ -415,7 +553,7 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
           )}
         </button>
 
-        <hr style={{ borderColor: 'var(--border-color)', margin: '0.5rem 0' }} />
+        <hr style={{ borderColor: 'var(--border-color)', margin: '0.25rem 0' }} />
 
         <button 
           className="btn btn-primary" 
@@ -531,6 +669,66 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
           </div>
         )}
       </div>
+
+      {/* Manual Crop Modal */}
+      {isManualCropping && (
+        <div style={{
+          position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.85)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1.5rem'
+        }}>
+          <div className="glass-panel" style={{ width: '900px', maxWidth: '95%', maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            <div style={{ padding: '1rem 1.5rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.1rem' }}>Manual Sticker Crop</h3>
+                <p style={{ margin: 0, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Click and drag a box over any sticker on the sheet to extract it.
+                </p>
+              </div>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button className="btn btn-primary" style={{ background: '#10b981' }} onClick={handleConfirmManualCrop}>
+                  <Check size={16} /> Crop & Add
+                </button>
+                <button className="btn btn-secondary" onClick={() => setIsManualCropping(false)}>
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+
+            <div style={{ 
+              flex: 1, 
+              overflow: 'auto', 
+              display: 'flex', 
+              alignItems: 'center', 
+              justifyContent: 'center', 
+              padding: '1rem',
+              background: '#090a0f',
+              position: 'relative' 
+            }}>
+              <div style={{ position: 'relative', display: 'inline-block' }}>
+                <canvas 
+                  ref={manualCropCanvasRef}
+                  style={{ display: 'block', maxWidth: '100%', maxHeight: '70vh', cursor: 'crosshair', userSelect: 'none' }}
+                  onMouseDown={handleManualCropMouseDown}
+                  onMouseMove={handleManualCropMouseMove}
+                  onMouseUp={handleManualCropMouseUp}
+                />
+                {cropRect && cropRect.w > 0 && cropRect.h > 0 && manualCropCanvasRef.current && (
+                  <div style={{
+                    position: 'absolute',
+                    left: `${(cropRect.x / manualCropCanvasRef.current.width) * 100}%`,
+                    top: `${(cropRect.y / manualCropCanvasRef.current.height) * 100}%`,
+                    width: `${(cropRect.w / manualCropCanvasRef.current.width) * 100}%`,
+                    height: `${(cropRect.h / manualCropCanvasRef.current.height) * 100}%`,
+                    border: '2px dashed #6366f1',
+                    background: 'rgba(99, 102, 241, 0.2)',
+                    pointerEvents: 'none'
+                  }} />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         .animate-spin { animation: spin 1s linear infinite; }
