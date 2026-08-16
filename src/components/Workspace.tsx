@@ -2,11 +2,11 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { segmentForeground } from '@imgly/background-removal';
 import { ReactCompareSlider, ReactCompareSliderImage } from 'react-compare-slider';
 import { getMagicWandMask } from '../utils/magicWand';
-import { trimCanvasTransparentMargins } from '../utils/stickerUtils';
+import { trimCanvasTransparentMargins, fillCanvasHoles } from '../utils/stickerUtils';
 import { 
   Download, Eraser, Sparkles, Wand2, Loader2, Undo2, 
   ZoomIn, ZoomOut, Maximize, Paintbrush, Check, Hand, 
-  SlidersHorizontal, Crop, Palette, RotateCcw
+  SlidersHorizontal, Crop, Palette, RotateCcw, ShieldCheck
 } from 'lucide-react';
 import { saveProject } from '../utils/projectStorage';
 import type { ProjectData } from '../utils/projectStorage';
@@ -43,6 +43,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   // Settings
   const [brushSize, setBrushSize] = useState(20);
   const [wandTolerance, setWandTolerance] = useState(30);
+  const [wandMode, setWandMode] = useState<'erase' | 'restore'>('erase');
   
   // Viewport/Zoom
   const [zoom, setZoom] = useState(1);
@@ -298,6 +299,32 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     saveProjectAuto();
   };
 
+  const handleRestoreHoles = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const performRestore = (origImg: HTMLImageElement) => {
+      saveHistory();
+      const changed = fillCanvasHoles(canvas, origImg);
+      if (changed) {
+        saveProjectAuto();
+      } else {
+        alert('All detected foreground areas are already intact.');
+      }
+    };
+
+    if (originalImageObjRef.current && originalImageObjRef.current.complete) {
+      performRestore(originalImageObjRef.current);
+    } else {
+      const img = new Image();
+      img.src = originalUrl;
+      img.onload = () => {
+        originalImageObjRef.current = img;
+        performRestore(img);
+      };
+    }
+  };
+
   const toggleCompare = () => {
     if (!showCompare && canvasRef.current) {
       setCurrentCanvasUrl(canvasRef.current.toDataURL('image/png'));
@@ -340,6 +367,65 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     const { x, y } = getCanvasMousePosition(e);
 
     if (activeTool === 'magic-wand') {
+      if (wandMode === 'restore' && originalImageObjRef.current) {
+        // Create temp canvas for original image
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = canvas.width;
+        tempCanvas.height = canvas.height;
+        const tCtx = tempCanvas.getContext('2d');
+        if (!tCtx) return;
+        tCtx.drawImage(originalImageObjRef.current, 0, 0, canvas.width, canvas.height);
+        const origImageData = tCtx.getImageData(0, 0, canvas.width, canvas.height);
+
+        if (wandMask) {
+          const index = y * canvas.width + x;
+          if (wandMask[index] === 1) {
+            saveHistory();
+            const currentData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < wandMask.length; i++) {
+              if (wandMask[i] === 1) {
+                const p = i * 4;
+                currentData.data[p] = origImageData.data[p];
+                currentData.data[p + 1] = origImageData.data[p + 1];
+                currentData.data[p + 2] = origImageData.data[p + 2];
+                currentData.data[p + 3] = origImageData.data[p + 3] || 255;
+              }
+            }
+            ctx.putImageData(currentData, 0, 0);
+            setWandMask(null);
+            clearMaskCanvas();
+            saveProjectAuto();
+            return;
+          } else {
+            setWandMask(null);
+            clearMaskCanvas();
+            return;
+          }
+        }
+
+        const mask = getMagicWandMask(origImageData, x, y, wandTolerance);
+        setWandMask(mask);
+        
+        const mCanvas = maskCanvasRef.current;
+        if (mCanvas) {
+          const mCtx = mCanvas.getContext('2d');
+          if (mCtx) {
+            const maskImageData = mCtx.createImageData(canvas.width, canvas.height);
+            for (let i = 0; i < mask.length; i++) {
+              if (mask[i] === 1) {
+                maskImageData.data[i * 4] = 16;     // Emerald green highlight
+                maskImageData.data[i * 4 + 1] = 185;
+                maskImageData.data[i * 4 + 2] = 129;
+                maskImageData.data[i * 4 + 3] = 140;
+              }
+            }
+            mCtx.putImageData(maskImageData, 0, 0);
+          }
+        }
+        return;
+      }
+
+      // Erase Mode
       if (wandMask) {
         const index = y * canvas.width + x;
         if (wandMask[index] === 1) {
@@ -466,17 +552,29 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
       if (strokeSnapshot) {
         ctx.putImageData(strokeSnapshot, 0, 0);
       }
-      ctx.save();
-      ctx.beginPath();
-      for (const p of newPoints) {
-        ctx.moveTo(p.x, p.y);
-        ctx.arc(p.x, p.y, brushSize / 2, 0, Math.PI * 2);
-      }
-      ctx.clip();
       if (originalImageObjRef.current) {
-        ctx.drawImage(originalImageObjRef.current, 0, 0, canvas.width, canvas.height);
+        const strokeCanvas = document.createElement('canvas');
+        strokeCanvas.width = canvas.width;
+        strokeCanvas.height = canvas.height;
+        const sCtx = strokeCanvas.getContext('2d');
+        if (sCtx) {
+          sCtx.lineCap = 'round';
+          sCtx.lineJoin = 'round';
+          sCtx.lineWidth = brushSize;
+          sCtx.strokeStyle = 'white';
+          sCtx.beginPath();
+          sCtx.moveTo(newPoints[0].x, newPoints[0].y);
+          for (let i = 1; i < newPoints.length; i++) {
+            sCtx.lineTo(newPoints[i].x, newPoints[i].y);
+          }
+          sCtx.stroke();
+
+          sCtx.globalCompositeOperation = 'source-in';
+          sCtx.drawImage(originalImageObjRef.current, 0, 0, canvas.width, canvas.height);
+
+          ctx.drawImage(strokeCanvas, 0, 0);
+        }
       }
-      ctx.restore();
     }
   };
 
@@ -636,20 +734,53 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         )}
 
         {activeTool === 'magic-wand' && (
-          <div>
-            <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Tolerance: {wandTolerance}</h4>
-            <input 
-              type="range" 
-              min="0" max="150" 
-              value={wandTolerance} 
-              onChange={(e) => setWandTolerance(parseInt(e.target.value))}
-              style={{ width: '100%' }}
-            />
-            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-              Click an area to highlight. Click highlighted region to erase. Click elsewhere to deselect.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <div>
+              <h4 style={{ marginBottom: '0.35rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Mode</h4>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button 
+                  className={`btn ${wandMode === 'erase' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
+                  onClick={() => { setWandMode('erase'); setWandMask(null); clearMaskCanvas(); }}
+                >
+                  <Eraser size={14} /> Erase
+                </button>
+                <button 
+                  className={`btn ${wandMode === 'restore' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
+                  onClick={() => { setWandMode('restore'); setWandMask(null); clearMaskCanvas(); }}
+                >
+                  <Paintbrush size={14} /> Restore
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Tolerance: {wandTolerance}</h4>
+              <input 
+                type="range" 
+                min="0" max="150" 
+                value={wandTolerance} 
+                onChange={(e) => setWandTolerance(parseInt(e.target.value))}
+                style={{ width: '100%' }}
+              />
+            </div>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              {wandMode === 'erase' 
+                ? 'Click an area to highlight in red. Click highlighted region to erase.'
+                : 'Click an area on the original image to highlight in green. Click to restore missing pixels!'}
             </p>
           </div>
         )}
+
+        <button 
+          className="btn btn-secondary" 
+          style={{ width: '100%', fontSize: '0.85rem' }}
+          onClick={handleRestoreHoles}
+          title="Automatically restores enclosed areas (like dark clothing or shadows) that were accidentally removed"
+        >
+          <ShieldCheck size={16} color="#10b981" /> Restore Enclosed Holes
+        </button>
 
         {activeTool === 'ai' && (
           <div style={{ padding: '1rem', background: 'rgba(99, 102, 241, 0.1)', borderRadius: 'var(--radius-sm)' }}>
