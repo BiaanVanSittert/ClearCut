@@ -151,10 +151,11 @@ export const deleteProject = async (id: string): Promise<void> => {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const request = store.delete(id);
+    store.delete(id);
     
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 };
 
@@ -163,10 +164,11 @@ export const clearAllProjects = async (): Promise<void> => {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
     const store = tx.objectStore(STORE_NAME);
-    const request = store.clear();
+    store.clear();
     
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => resolve();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
   });
 };
 
