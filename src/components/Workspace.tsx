@@ -1,7 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { segmentForeground } from '@imgly/background-removal';
+import { ReactCompareSlider, ReactCompareSliderImage } from 'react-compare-slider';
 import { getMagicWandMask } from '../utils/magicWand';
-import { Download, Eraser, Sparkles, Wand2, Loader2, Undo2, ZoomIn, ZoomOut, Maximize, Paintbrush, Check, Hand } from 'lucide-react';
+import { trimCanvasTransparentMargins } from '../utils/stickerUtils';
+import { 
+  Download, Eraser, Sparkles, Wand2, Loader2, Undo2, 
+  ZoomIn, ZoomOut, Maximize, Paintbrush, Check, Hand, 
+  SlidersHorizontal, Crop, Palette, RotateCcw
+} from 'lucide-react';
 import { saveProject } from '../utils/projectStorage';
 import type { ProjectData } from '../utils/projectStorage';
 
@@ -15,6 +21,15 @@ interface WorkspaceProps {
 }
 
 type Tool = 'ai' | 'eraser' | 'restore' | 'magic-wand' | 'pan';
+type BgType = 'transparent' | 'solid' | 'gradient';
+
+const PRESET_COLORS = ['#ffffff', '#000000', '#1e293b', '#f1f5f9', '#6366f1', '#10b981', '#f59e0b', '#ef4444'];
+const PRESET_GRADIENTS = [
+  { name: 'Cosmic', css: 'linear-gradient(135deg, #6366f1 0%, #a855f7 100%)' },
+  { name: 'Ocean', css: 'linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%)' },
+  { name: 'Sunset', css: 'linear-gradient(135deg, #f43f5e 0%, #fb923c 100%)' },
+  { name: 'Emerald', css: 'linear-gradient(135deg, #10b981 0%, #059669 100%)' }
+];
 
 export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl, projectData, onSave, onCancel, initialImageUrl }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -32,6 +47,15 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   // Viewport/Zoom
   const [zoom, setZoom] = useState(1);
   
+  // Compare Slider State
+  const [showCompare, setShowCompare] = useState(false);
+  const [currentCanvasUrl, setCurrentCanvasUrl] = useState<string>('');
+
+  // Background Customization
+  const [bgType, setBgType] = useState<BgType>('transparent');
+  const [bgColor, setBgColor] = useState('#ffffff');
+  const [bgGradient, setBgGradient] = useState(PRESET_GRADIENTS[0].css);
+
   // State
   const [isDrawing, setIsDrawing] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
@@ -73,7 +97,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     setHistory((prev) => [...prev, imageData]);
   }, []);
 
-  const saveProjectAuto = () => {
+  const saveProjectAuto = useCallback(() => {
     if (projectData && !onSave && canvasRef.current) {
       saveProject({
         ...projectData,
@@ -81,9 +105,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         timestamp: Date.now()
       });
     }
-  };
+  }, [projectData, onSave]);
 
-  const handleUndo = () => {
+  const handleUndo = useCallback(() => {
     if (history.length === 0) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -100,21 +124,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     canvas.height = prevState.height;
     ctx.putImageData(prevState, 0, 0);
     
-    if (projectData && !onSave) {
-      saveProject({
-        ...projectData,
-        editedUrl: canvas.toDataURL('image/png'),
-        timestamp: Date.now()
-      });
-    }
-    
     // Clear any active masks
     setWandMask(null);
     setAiMask(null);
     clearMaskCanvas();
     
     saveProjectAuto();
-  };
+  }, [history, saveProjectAuto]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -125,18 +141,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [history]);
+  }, [handleUndo]);
 
-  useEffect(() => {
-    const img = new Image();
-    img.src = initialImageUrl || ((projectData && !onSave && projectData.editedUrl) ? projectData.editedUrl : originalUrl);
-    img.onload = () => {
-      imageObjRef.current = img;
-      resetCanvas(img);
-    };
-  }, [originalUrl, projectData, onSave, initialImageUrl]);
-
-  const resetCanvas = (img: HTMLImageElement) => {
+  const resetCanvas = useCallback((img: HTMLImageElement) => {
     setPanOffset({ x: 0, y: 0 });
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -166,7 +173,16 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
       const zoomY = (rect.height - padding) / canvas.height;
       setZoom(Math.min(zoomX, zoomY, 1));
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const img = new Image();
+    img.src = initialImageUrl || ((projectData && !onSave && projectData.editedUrl) ? projectData.editedUrl : originalUrl);
+    img.onload = () => {
+      imageObjRef.current = img;
+      resetCanvas(img);
+    };
+  }, [originalUrl, projectData, onSave, initialImageUrl, resetCanvas]);
 
   const clearMaskCanvas = () => {
     const mCanvas = maskCanvasRef.current;
@@ -179,7 +195,12 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     setIsProcessing(true);
     setProgress(0);
     try {
-      const blob = await segmentForeground(originalFile, {
+      // Use original file if available and non-empty, otherwise fallback to URL or current canvas
+      const imageSource = (originalFile && originalFile.size > 0) 
+        ? originalFile 
+        : (imageObjRef.current?.src || originalUrl);
+
+      const blob = await segmentForeground(imageSource, {
         progress: (_key: string, current: number, total: number) => {
           setProgress(Math.round((current / total) * 100));
         }
@@ -189,6 +210,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
       const img = new Image();
       img.src = url;
       img.onload = () => {
+        URL.revokeObjectURL(url);
         const canvas = canvasRef.current;
         const mCanvas = maskCanvasRef.current;
         if (!canvas || !mCanvas) return;
@@ -209,9 +231,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         
         const highlightData = mCtx.createImageData(canvas.width, canvas.height);
         for (let i = 0; i < maskData.data.length; i += 4) {
-          // Assuming segmentForeground returns an alpha mask where foreground alpha > 0
-          // If the background is removed, alpha will be 0.
-          if (maskData.data[i + 3] === 0 || maskData.data[i] === 0) { // Check alpha or dark pixel (some models return grayscale)
+          if (maskData.data[i + 3] === 0 || maskData.data[i] === 0) {
             highlightData.data[i] = 239;     // R
             highlightData.data[i + 1] = 68;  // G
             highlightData.data[i + 2] = 68;  // B
@@ -255,6 +275,36 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
     clearMaskCanvas();
   };
 
+  const handleAutoTrim = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const trimmed = trimCanvasTransparentMargins(canvas);
+    if (!trimmed) {
+      alert('Image is already fitted or completely transparent.');
+      return;
+    }
+    saveHistory();
+    canvas.width = trimmed.width;
+    canvas.height = trimmed.height;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(trimmed, 0, 0);
+    }
+    if (maskCanvasRef.current) {
+      maskCanvasRef.current.width = canvas.width;
+      maskCanvasRef.current.height = canvas.height;
+    }
+    saveProjectAuto();
+  };
+
+  const toggleCompare = () => {
+    if (!showCompare && canvasRef.current) {
+      setCurrentCanvasUrl(canvasRef.current.toDataURL('image/png'));
+    }
+    setShowCompare(prev => !prev);
+  };
+
   const getCanvasMousePosition = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
@@ -269,7 +319,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (activeTool === 'ai') return;
+    if (activeTool === 'ai' || showCompare) return;
     
     // Middle click triggers pan regardless of tool
     if (e.button === 1 || activeTool === 'pan') {
@@ -400,7 +450,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
 
     if (activeTool === 'eraser') {
       if (strokeSnapshot) {
-        ctx.putImageData(strokeSnapshot, 0, 0); // Restore to start of stroke
+        ctx.putImageData(strokeSnapshot, 0, 0);
       }
       ctx.globalCompositeOperation = 'destination-out';
       ctx.beginPath();
@@ -416,31 +466,9 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
       if (strokeSnapshot) {
         ctx.putImageData(strokeSnapshot, 0, 0);
       }
-      ctx.globalCompositeOperation = 'source-over';
       ctx.save();
       ctx.beginPath();
-      ctx.moveTo(newPoints[0].x, newPoints[0].y);
-      for (let i = 1; i < newPoints.length; i++) {
-        ctx.lineTo(newPoints[i].x, newPoints[i].y);
-      }
-      ctx.lineWidth = brushSize;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.stroke(); // We can't stroke an image directly. We need to clip to stroke!
-      
-      // Wait, we can't clip to a stroke. We have to stroke a path and then use destination-in or similar?
-      // Actually, drawing the original image over a stroke path:
-      // We can use a temporary canvas for the stroke, then draw original image with source-in!
-      ctx.restore();
-
-      // Better fallback for Restore tool since we can't clip a stroke easily:
-      // We just draw circles at every interpolated point. It might be slightly larger, but much simpler.
-      if (strokeSnapshot) {
-        ctx.putImageData(strokeSnapshot, 0, 0);
-      }
-      ctx.save();
-      ctx.beginPath();
-      for (let p of newPoints) {
+      for (const p of newPoints) {
         ctx.moveTo(p.x, p.y);
         ctx.arc(p.x, p.y, brushSize / 2, 0, Math.PI * 2);
       }
@@ -477,39 +505,94 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
   const handleExport = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const url = canvas.toDataURL(exportFormat, exportQuality / 100);
+
+    // Create an export canvas to apply custom backgrounds if selected
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const eCtx = exportCanvas.getContext('2d');
+    if (!eCtx) return;
+
+    if (bgType === 'solid') {
+      eCtx.fillStyle = bgColor;
+      eCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    } else if (bgType === 'gradient') {
+      // Draw linear gradient
+      const grad = eCtx.createLinearGradient(0, 0, exportCanvas.width, exportCanvas.height);
+      if (bgGradient.includes('#6366f1')) {
+        grad.addColorStop(0, '#6366f1');
+        grad.addColorStop(1, '#a855f7');
+      } else if (bgGradient.includes('#06b6d4')) {
+        grad.addColorStop(0, '#06b6d4');
+        grad.addColorStop(1, '#3b82f6');
+      } else if (bgGradient.includes('#f43f5e')) {
+        grad.addColorStop(0, '#f43f5e');
+        grad.addColorStop(1, '#fb923c');
+      } else {
+        grad.addColorStop(0, '#10b981');
+        grad.addColorStop(1, '#059669');
+      }
+      eCtx.fillStyle = grad;
+      eCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    } else if (exportFormat === 'image/jpeg') {
+      // JPEG requires solid background fallback if transparent
+      eCtx.fillStyle = '#ffffff';
+      eCtx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+    }
+
+    eCtx.drawImage(canvas, 0, 0);
+
+    const url = exportCanvas.toDataURL(exportFormat, exportQuality / 100);
     const a = document.createElement('a');
     a.href = url;
     a.download = `clearcut_export.${exportFormat.split('/')[1]}`;
     a.click();
   };
 
+  const getCanvasBackgroundStyle = () => {
+    if (bgType === 'solid') return { backgroundColor: bgColor };
+    if (bgType === 'gradient') return { background: bgGradient };
+    return { background: 'repeating-conic-gradient(#222 0% 25%, #1a1a1a 0% 50%) 50% / 20px 20px' };
+  };
+
   return (
     <div style={{ display: 'flex', gap: '2rem', height: '100%', flex: 1 }}>
       {/* Sidebar Tools */}
-      <div className="glass-panel" style={{ width: '280px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '2rem', overflowY: 'auto' }}>
+      <div className="glass-panel" style={{ width: '300px', padding: '1.5rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', overflowY: 'auto' }}>
         
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3 style={{ fontSize: '1.1rem' }}>Tools</h3>
-          <button 
-            className="btn" 
-            style={{ padding: '0.4rem', background: 'transparent', color: history.length ? 'var(--text-main)' : 'var(--text-muted)' }}
-            onClick={handleUndo}
-            disabled={history.length === 0}
-            title="Undo"
-          >
-            <Undo2 size={20} />
-          </button>
+          <div style={{ display: 'flex', gap: '0.25rem' }}>
+            <button 
+              className="btn btn-secondary" 
+              style={{ padding: '0.4rem', color: history.length ? 'var(--text-main)' : 'var(--text-muted)' }}
+              onClick={handleUndo}
+              disabled={history.length === 0}
+              title="Undo (Ctrl+Z)"
+            >
+              <Undo2 size={18} />
+            </button>
+            <button 
+              className="btn btn-secondary" 
+              style={{ padding: '0.4rem' }}
+              onClick={() => {
+                if (imageObjRef.current) resetCanvas(imageObjRef.current);
+              }}
+              title="Reset Image"
+            >
+              <RotateCcw size={18} />
+            </button>
+          </div>
         </div>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
           <button 
             className={`btn ${activeTool === 'ai' ? 'btn-primary' : 'btn-secondary'}`} 
-            onClick={() => setActiveTool('ai')}
+            onClick={() => { setActiveTool('ai'); setShowCompare(false); }}
           >
-            <Sparkles size={18} /> AI Removal
+            <Sparkles size={18} /> AI Background Removal
           </button>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
             <button 
               className={`btn ${activeTool === 'pan' ? 'btn-primary' : 'btn-secondary'}`} 
               onClick={() => { setActiveTool('pan'); setWandMask(null); setAiMask(null); clearMaskCanvas(); }}
@@ -530,13 +613,13 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
             >
               <Paintbrush size={18} /> Restore
             </button>
+            <button 
+              className={`btn ${activeTool === 'magic-wand' ? 'btn-primary' : 'btn-secondary'}`} 
+              onClick={() => { setActiveTool('magic-wand'); setAiMask(null); }}
+            >
+              <Wand2 size={18} /> Magic Wand
+            </button>
           </div>
-          <button 
-            className={`btn ${activeTool === 'magic-wand' ? 'btn-primary' : 'btn-secondary'}`} 
-            onClick={() => { setActiveTool('magic-wand'); setAiMask(null); }}
-          >
-            <Wand2 size={18} /> Magic Wand
-          </button>
         </div>
 
         {(activeTool === 'eraser' || activeTool === 'restore') && (
@@ -544,7 +627,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
             <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Brush Size: {brushSize}px</h4>
             <input 
               type="range" 
-              min="5" max="100" 
+              min="5" max="150" 
               value={brushSize} 
               onChange={(e) => setBrushSize(parseInt(e.target.value))}
               style={{ width: '100%' }}
@@ -554,7 +637,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
 
         {activeTool === 'magic-wand' && (
           <div>
-            <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Hardness/Tolerance: {wandTolerance}</h4>
+            <h4 style={{ marginBottom: '0.5rem', fontSize: '0.9rem', color: 'var(--text-muted)' }}>Tolerance: {wandTolerance}</h4>
             <input 
               type="range" 
               min="0" max="150" 
@@ -563,7 +646,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
               style={{ width: '100%' }}
             />
             <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-              Click an area to highlight. Double-click to delete. Click outside to cancel.
+              Click an area to highlight. Click highlighted region to erase. Click elsewhere to deselect.
             </p>
           </div>
         )}
@@ -573,7 +656,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
             {!aiMask ? (
               <>
                 <p style={{ fontSize: '0.85rem', marginBottom: '1rem' }}>
-                  Automatically detect and highlight the background using local AI.
+                  Automatically detect and highlight the background using client-side AI.
                 </p>
                 <button className="btn btn-primary" style={{ width: '100%' }} onClick={handleRunAI} disabled={isProcessing}>
                   {isProcessing ? <><Loader2 className="animate-spin" size={18} /> Processing {progress}%</> : 'Detect Background'}
@@ -582,7 +665,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
                 <p style={{ fontSize: '0.85rem', marginBottom: '0.5rem' }}>
-                  Background is highlighted in red.
+                  Background highlighted in red.
                 </p>
                 <button className="btn btn-primary" onClick={confirmAiRemoval} style={{ background: '#10b981' }}>
                   <Check size={18} /> Confirm Delete
@@ -594,6 +677,88 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
             )}
           </div>
         )}
+
+        <hr style={{ borderColor: 'var(--border-color)' }} />
+
+        {/* Background Replacement Section */}
+        <div>
+          <h4 style={{ fontSize: '0.95rem', marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Palette size={16} /> Background Fill
+          </h4>
+          <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '0.75rem' }}>
+            <button 
+              className={`btn ${bgType === 'transparent' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
+              onClick={() => setBgType('transparent')}
+            >
+              Transparent
+            </button>
+            <button 
+              className={`btn ${bgType === 'solid' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
+              onClick={() => setBgType('solid')}
+            >
+              Solid
+            </button>
+            <button 
+              className={`btn ${bgType === 'gradient' ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
+              onClick={() => setBgType('gradient')}
+            >
+              Gradient
+            </button>
+          </div>
+
+          {bgType === 'solid' && (
+            <div>
+              <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.5rem' }}>
+                <input 
+                  type="color" 
+                  value={bgColor} 
+                  onChange={(e) => setBgColor(e.target.value)}
+                  style={{ width: '36px', height: '36px', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
+                />
+                <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>{bgColor.toUpperCase()}</span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                {PRESET_COLORS.map(c => (
+                  <div 
+                    key={c}
+                    onClick={() => setBgColor(c)}
+                    style={{
+                      width: '24px', height: '24px', borderRadius: '4px',
+                      background: c, cursor: 'pointer',
+                      border: bgColor === c ? '2px solid var(--primary-color)' : '1px solid var(--border-color)'
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {bgType === 'gradient' && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              {PRESET_GRADIENTS.map(g => (
+                <button
+                  key={g.name}
+                  onClick={() => setBgGradient(g.css)}
+                  style={{
+                    background: g.css,
+                    border: bgGradient === g.css ? '2px solid white' : '1px solid transparent',
+                    color: 'white',
+                    padding: '0.5rem',
+                    borderRadius: '4px',
+                    fontSize: '0.75rem',
+                    fontWeight: 600,
+                    cursor: 'pointer'
+                  }}
+                >
+                  {g.name}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
 
         <hr style={{ borderColor: 'var(--border-color)' }} />
 
@@ -628,7 +793,7 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
                 >
                   <option value="image/png">PNG (Transparent)</option>
                   <option value="image/webp">WEBP</option>
-                  <option value="image/jpeg">JPEG (Solid BG)</option>
+                  <option value="image/jpeg">JPEG</option>
                 </select>
               </div>
               
@@ -658,7 +823,25 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
         
         {/* Editor Toolbar */}
         <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontWeight: 500 }}>Editor Workspace</span>
+          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+            <span style={{ fontWeight: 500 }}>Editor Workspace</span>
+            <button 
+              className={`btn ${showCompare ? 'btn-primary' : 'btn-secondary'}`}
+              style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }}
+              onClick={toggleCompare}
+              title="Compare with original"
+            >
+              <SlidersHorizontal size={15} /> Compare View
+            </button>
+            <button 
+              className="btn btn-secondary"
+              style={{ padding: '0.35rem 0.75rem', fontSize: '0.85rem' }}
+              onClick={handleAutoTrim}
+              title="Crop to tightest non-transparent bounding box"
+            >
+              <Crop size={15} /> Auto-Trim
+            </button>
+          </div>
           
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', background: 'var(--bg-dark)', padding: '0.25rem', borderRadius: 'var(--radius-sm)' }}>
             <button className="btn" style={{ padding: '0.4rem', background: 'transparent' }} onClick={() => setZoom(z => Math.max(0.1, z - 0.2))}>
@@ -674,32 +857,52 @@ export const Workspace: React.FC<WorkspaceProps> = ({ originalFile, originalUrl,
           </div>
         </div>
         
-        {/* Interactive Canvas Container */}
-        <div ref={containerRef} style={{ flex: 1, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'repeating-conic-gradient(#222 0% 25%, #1a1a1a 0% 50%) 50% / 20px 20px' }}>
-          <div style={{ position: 'relative', transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: 'center center', transition: isPanning ? 'none' : 'transform 0.1s ease-out' }}>
-            <canvas
-              ref={canvasRef}
-              style={{
-                display: 'block',
-                cursor: isPanning ? 'grabbing' : activeTool === 'pan' ? 'grab' : (activeTool === 'eraser' || activeTool === 'restore') ? 'none' : activeTool === 'magic-wand' ? 'pointer' : 'default',
-              }}
-              onMouseDown={handleCanvasMouseDown}
-              onMouseMove={handleCanvasMouseMove}
-              onMouseUp={handleCanvasMouseUp}
-              onMouseLeave={handleCanvasMouseLeave}
-              onContextMenu={(e) => e.preventDefault()}
-            />
-            {/* Mask Overlay Canvas */}
-            <canvas
-              ref={maskCanvasRef}
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                pointerEvents: 'none',
-              }}
-            />
-          </div>
+        {/* Interactive Canvas Container or Compare View */}
+        <div 
+          ref={containerRef} 
+          style={{ 
+            flex: 1, 
+            overflow: 'hidden', 
+            display: 'flex', 
+            alignItems: 'center', 
+            justifyContent: 'center', 
+            ...getCanvasBackgroundStyle()
+          }}
+        >
+          {showCompare ? (
+            <div style={{ maxWidth: '85%', maxHeight: '85%', display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 'var(--radius-md)', overflow: 'hidden', boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}>
+              <ReactCompareSlider
+                itemOne={<ReactCompareSliderImage src={originalUrl} alt="Original Image" style={{ maxHeight: '75vh', objectFit: 'contain' }} />}
+                itemTwo={<ReactCompareSliderImage src={currentCanvasUrl} alt="Cutout Image" style={{ maxHeight: '75vh', objectFit: 'contain' }} />}
+                style={{ width: '100%', height: 'auto' }}
+              />
+            </div>
+          ) : (
+            <div style={{ position: 'relative', transform: `translate(${panOffset.x}px, ${panOffset.y}px) scale(${zoom})`, transformOrigin: 'center center', transition: isPanning ? 'none' : 'transform 0.1s ease-out' }}>
+              <canvas
+                ref={canvasRef}
+                style={{
+                  display: 'block',
+                  cursor: isPanning ? 'grabbing' : activeTool === 'pan' ? 'grab' : (activeTool === 'eraser' || activeTool === 'restore') ? 'none' : activeTool === 'magic-wand' ? 'pointer' : 'default',
+                }}
+                onMouseDown={handleCanvasMouseDown}
+                onMouseMove={handleCanvasMouseMove}
+                onMouseUp={handleCanvasMouseUp}
+                onMouseLeave={handleCanvasMouseLeave}
+                onContextMenu={(e) => e.preventDefault()}
+              />
+              {/* Mask Overlay Canvas */}
+              <canvas
+                ref={maskCanvasRef}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  pointerEvents: 'none',
+                }}
+              />
+            </div>
+          )}
         </div>
       </div>
       
