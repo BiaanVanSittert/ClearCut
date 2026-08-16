@@ -10,6 +10,8 @@ interface ProjectsModalProps {
 
 export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad }) => {
   const [projects, setProjects] = useState<ProjectData[]>([]);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
 
   useEffect(() => {
     fetchProjects();
@@ -22,20 +24,18 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
 
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
-    if (confirm('Are you sure you want to delete this project?')) {
-      const proj = projects.find(p => p.id === id);
-      if (proj) revokeProjectUrls(proj);
-      await deleteProject(id);
-      fetchProjects();
-    }
+    const proj = projects.find(p => p.id === id);
+    if (proj) revokeProjectUrls(proj);
+    await deleteProject(id);
+    setDeletingId(null);
+    await fetchProjects();
   };
 
   const handleClearAll = async () => {
-    if (confirm('Are you sure you want to delete ALL projects? This cannot be undone.')) {
-      projects.forEach(p => revokeProjectUrls(p));
-      await clearAllProjects();
-      fetchProjects();
-    }
+    projects.forEach(p => revokeProjectUrls(p));
+    await clearAllProjects();
+    setConfirmClearAll(false);
+    await fetchProjects();
   };
 
   return (
@@ -91,23 +91,59 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({ onClose, onLoad })
                     </p>
                   </div>
                 </div>
-                <button 
-                  className="btn" 
-                  style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', flexShrink: 0 }}
-                  onClick={(e) => handleDelete(e, proj.id)}
-                >
-                  <Trash2 size={18} />
-                </button>
+
+                {deletingId === proj.id ? (
+                  <div style={{ display: 'flex', gap: '0.35rem', flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+                    <button 
+                      className="btn" 
+                      style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', background: '#ef4444', color: 'white' }}
+                      onClick={(e) => handleDelete(e, proj.id)}
+                    >
+                      Delete
+                    </button>
+                    <button 
+                      className="btn btn-secondary" 
+                      style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem' }}
+                      onClick={() => setDeletingId(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button 
+                    className="btn" 
+                    style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)', flexShrink: 0 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeletingId(proj.id);
+                    }}
+                    title="Delete Project"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                )}
               </div>
             ))
           )}
         </div>
 
         {projects.length > 0 && (
-          <div style={{ padding: '1.5rem', borderTop: '1px solid var(--border-color)', textAlign: 'right' }}>
-            <button className="btn" style={{ color: '#ef4444' }} onClick={handleClearAll}>
-              Delete All Projects
-            </button>
+          <div style={{ padding: '1.5rem', borderTop: '1px solid var(--border-color)', display: 'flex', justifyContent: 'flex-end', gap: '0.5rem', alignItems: 'center' }}>
+            {confirmClearAll ? (
+              <>
+                <span style={{ fontSize: '0.85rem', color: '#ef4444', marginRight: '0.5rem' }}>Delete all saved projects?</span>
+                <button className="btn" style={{ background: '#ef4444', color: 'white' }} onClick={handleClearAll}>
+                  Yes, Delete All
+                </button>
+                <button className="btn btn-secondary" onClick={() => setConfirmClearAll(false)}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button className="btn" style={{ color: '#ef4444', background: 'rgba(239, 68, 68, 0.1)' }} onClick={() => setConfirmClearAll(true)}>
+                Delete All Projects
+              </button>
+            )}
           </div>
         )}
       </div>
