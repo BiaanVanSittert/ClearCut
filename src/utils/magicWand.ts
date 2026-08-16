@@ -16,8 +16,8 @@ export function getMagicWandMask(
   const startB = data[startPos + 2];
   const startA = data[startPos + 3];
 
-  const visited = new Uint8Array(width * height);
-  if (startA === 0) return visited; // return empty mask if clicking on transparent
+  const mask = new Uint8Array(width * height);
+  if (startA === 0) return mask; // return empty mask if clicking on transparent
 
   const matchColor = (pos: number) => {
     const r = data[pos];
@@ -36,25 +36,25 @@ export function getMagicWandMask(
     return rDiff <= tolerance && gDiff <= tolerance && bDiff <= tolerance && aDiff <= tolerance;
   };
 
+  const visited = new Uint8Array(width * height);
   const pixelStack: [number, number][] = [[startX, startY]];
 
   while (pixelStack.length > 0) {
     const [x, y] = pixelStack.pop()!;
+    const idx = y * width + x;
+
+    if (visited[idx]) continue;
+    visited[idx] = 1;
+
     const pos = getPixelPos(x, y);
-
-    if (visited[y * width + x]) continue;
-    visited[y * width + x] = 1;
-
     if (matchColor(pos)) {
-      if (x > 0) pixelStack.push([x - 1, y]);
-      if (x < width - 1) pixelStack.push([x + 1, y]);
-      if (y > 0) pixelStack.push([x, y - 1]);
-      if (y < height - 1) pixelStack.push([x, y + 1]);
-    } else {
-      // not a match, unmark visited so we don't treat it as highlighted
-      visited[y * width + x] = 0;
+      mask[idx] = 1;
+      if (x > 0 && !visited[idx - 1]) pixelStack.push([x - 1, y]);
+      if (x < width - 1 && !visited[idx + 1]) pixelStack.push([x + 1, y]);
+      if (y > 0 && !visited[idx - width]) pixelStack.push([x, y - 1]);
+      if (y < height - 1 && !visited[idx + width]) pixelStack.push([x, y + 1]);
     }
   }
 
-  return visited;
+  return mask;
 }
