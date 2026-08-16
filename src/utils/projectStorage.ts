@@ -52,10 +52,18 @@ export const openDB = (): Promise<IDBDatabase> => {
   });
 };
 
-const urlToBlob = async (url: string): Promise<Blob> => {
+const urlToBlob = async (url?: string): Promise<Blob> => {
   if (!url) return new Blob();
-  const res = await fetch(url);
-  return await res.blob();
+  try {
+    const res = await fetch(url);
+    if (!res.ok && !url.startsWith('blob:') && !url.startsWith('data:')) {
+      return new Blob();
+    }
+    return await res.blob();
+  } catch (err) {
+    console.warn('Failed to convert URL to Blob in storage:', err);
+    return new Blob();
+  }
 };
 
 export const saveProject = async (project: ProjectData): Promise<void> => {

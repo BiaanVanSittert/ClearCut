@@ -8,6 +8,15 @@ interface ImageUploaderProps {
 export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageLoaded }) => {
   const [isDragging, setIsDragging] = useState(false);
 
+  const processFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload a valid image file.');
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    onImageLoaded(file, url);
+  }, [onImageLoaded]);
+
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
@@ -24,22 +33,13 @@ export const ImageUploader: React.FC<ImageUploaderProps> = ({ onImageLoaded }) =
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       processFile(e.dataTransfer.files[0]);
     }
-  }, []);
+  }, [processFile]);
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       processFile(e.target.files[0]);
     }
-  }, []);
-
-  const processFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      alert('Please upload a valid image file.');
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    onImageLoaded(file, url);
-  };
+  }, [processFile]);
 
   return (
     <div 
