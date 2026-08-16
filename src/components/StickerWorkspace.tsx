@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { extractStickers, applyCustomOutline } from '../utils/stickerUtils';
+import { extractStickers, applyCustomOutline, fillAlphaHoles } from '../utils/stickerUtils';
 import type { StickerRect } from '../utils/stickerUtils';
 import { removeBackground } from '@imgly/background-removal';
 import JSZip from 'jszip';
 import { 
   Download, Loader2, Sparkles, Trash2, Scissors, Edit2, 
-  CheckSquare, Square, Undo, LayoutGrid, Crop, X, Check, Palette 
+  CheckSquare, Square, Undo, LayoutGrid, Crop, X, Check, Palette, ShieldCheck 
 } from 'lucide-react';
 import { Workspace } from './Workspace';
 import { saveProject } from '../utils/projectStorage';
@@ -42,6 +42,9 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
   const [addOutline, setAddOutline] = useState(false);
   const [outlineWidth, setOutlineWidth] = useState(10);
   const [outlineColor, setOutlineColor] = useState('#ffffff');
+
+  // Protect Interior State
+  const [protectInterior, setProtectInterior] = useState(true);
 
   // Manual Crop Modal State
   const [isManualCropping, setIsManualCropping] = useState(false);
@@ -170,6 +173,9 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       
       try {
         let processedUrl = await removeBgForSticker(targetStickers[i].originalUrl);
+        if (protectInterior) {
+          processedUrl = await fillAlphaHoles(processedUrl, targetStickers[i].originalUrl);
+        }
         if (addOutline) {
           processedUrl = await applyCustomOutline(processedUrl, outlineColor, outlineWidth);
         }
@@ -182,6 +188,25 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
       setGlobalProgress(Math.round(((i + 1) / targetStickers.length) * 100));
     }
     setIsBulkProcessing(false);
+  };
+
+  const handleRestoreStickerHoles = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    const target = stickers.find(s => s.id === id);
+    if (!target || !target.processedUrl) return;
+
+    setStickers(prev => prev.map(s => s.id === id ? { ...s, isProcessing: true } : s));
+    try {
+      saveHistory(stickers);
+      let restoredUrl = await fillAlphaHoles(target.processedUrl, target.originalUrl);
+      if (addOutline) {
+        restoredUrl = await applyCustomOutline(restoredUrl, outlineColor, outlineWidth);
+      }
+      setStickers(prev => prev.map(s => s.id === id ? { ...s, processedUrl: restoredUrl, isProcessing: false } : s));
+    } catch (err) {
+      console.error('Failed to restore holes:', err);
+      setStickers(prev => prev.map(s => s.id === id ? { ...s, isProcessing: false } : s));
+    }
   };
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
@@ -483,6 +508,19 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
 
         <hr style={{ borderColor: 'var(--border-color)', margin: '0.25rem 0' }} />
         
+        {/* Interior Protection Toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
+          <input 
+            type="checkbox" 
+            id="protect-interior-toggle"
+            checked={protectInterior}
+            onChange={(e) => setProtectInterior(e.target.checked)}
+          />
+          <label htmlFor="protect-interior-toggle" style={{ cursor: 'pointer', fontWeight: 500 }} title="Automatically restores any dark clothing, fur, or shadows accidentally erased inside the sticker boundary">
+            Protect Interior (Prevent Holes)
+          </label>
+        </div>
+
         {/* Outline Customizer */}
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem', marginBottom: '0.5rem' }}>
@@ -645,9 +683,13 @@ export const StickerWorkspace: React.FC<StickerWorkspaceProps> = ({ originalUrl,
                       backdropFilter: 'blur(4px)'
                     }}
                   >
-                    {!sticker.processedUrl && (
+                    {!sticker.processedUrl ? (
                       <button className="icon-btn-small" title="Split Further" onClick={(e) => handleSplitFurther(e, sticker.id)}>
                         <Scissors size={14} />
+                      </button>
+                    ) : (
+                      <button className="icon-btn-small" title="Restore Enclosed Holes" onClick={(e) => handleRestoreStickerHoles(e, sticker.id)}>
+                        <ShieldCheck size={14} color="#10b981" />
                       </button>
                     )}
                     <button className="icon-btn-small" title="Edit Manually" onClick={(e) => { e.stopPropagation(); setEditingStickerId(sticker.id); }}>
